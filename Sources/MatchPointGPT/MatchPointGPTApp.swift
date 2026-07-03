@@ -267,6 +267,40 @@ struct MatchRadar: Equatable {
         return marketFavorite ?? "Okänd"
     }
 
+    var marketSpread: Double? {
+        guard let a = match.playerA.odds, let b = match.playerB.odds else { return nil }
+        return abs(a - b)
+    }
+
+    var marketPulse: Int {
+        guard let spread = marketSpread else { return 2 }
+        switch spread {
+        case 0..<0.35:
+            return 2
+        case 0.35..<0.85:
+            return 3
+        case 0.85..<1.70:
+            return 4
+        default:
+            return 5
+        }
+    }
+
+    var atpCoverage: Int {
+        [playerA, playerB].compactMap { $0 }.count
+    }
+
+    var modelFavorite: String {
+        guard let modelA else { return "Väntar" }
+        if modelA >= 0.53 {
+            return match.playerA.lastName
+        }
+        if modelA <= 0.47 {
+            return match.playerB.lastName
+        }
+        return "Jämnt"
+    }
+
     var tension: Int {
         let healthGap = abs(pulseA.health - pulseB.health)
         let oddsGap = abs((match.playerA.odds ?? 2.0) - (match.playerB.odds ?? 2.0))
@@ -564,6 +598,7 @@ struct SituationRoom: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 MatchHeader(radar: radar)
+                RadarBriefing(radar: radar)
                 HStack(alignment: .top, spacing: 14) {
                     PlayerRadarCard(player: radar.playerA, fallback: radar.match.playerA, pulse: radar.pulseA, model: radar.modelA)
                     PlayerRadarCard(player: radar.playerB, fallback: radar.match.playerB, pulse: radar.pulseB, model: radar.modelB)
@@ -581,6 +616,105 @@ struct SituationRoom: View {
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(Theme.border, lineWidth: 1)
+        }
+    }
+}
+
+struct RadarBriefing: View {
+    let radar: MatchRadar
+
+    var body: some View {
+        HStack(spacing: 12) {
+            BriefingTile(
+                title: "Marknad",
+                value: radar.favoriteName,
+                detail: marketDetail,
+                color: Theme.live,
+                bars: radar.marketPulse
+            )
+            BriefingTile(
+                title: "ATP-signal",
+                value: "\(radar.atpCoverage)/2",
+                detail: atpDetail,
+                color: radar.atpCoverage == 2 ? Theme.accent : Theme.warning,
+                bars: max(1, radar.atpCoverage * 2 + (radar.atpCoverage == 2 ? 1 : 0))
+            )
+            BriefingTile(
+                title: "Modell",
+                value: radar.modelFavorite,
+                detail: modelDetail,
+                color: Theme.warning,
+                bars: modelBars
+            )
+        }
+    }
+
+    private var marketDetail: String {
+        guard let spread = radar.marketSpread else { return "Oddsen saknas" }
+        if spread < 0.35 { return "nära myntkast" }
+        if spread < 0.85 { return "lätt lutning" }
+        if spread < 1.70 { return "tydlig favorit" }
+        return "hård marknadstro"
+    }
+
+    private var atpDetail: String {
+        switch radar.atpCoverage {
+        case 2:
+            return "båda spelarna hittade"
+        case 1:
+            return "halv datatäckning"
+        default:
+            return "endast Oddset just nu"
+        }
+    }
+
+    private var modelDetail: String {
+        guard let model = radar.modelA else { return "väntar på databas" }
+        return model.formatted(.percent.precision(.fractionLength(0))) + " / " + (1 - model).formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private var modelBars: Int {
+        guard let model = radar.modelA else { return 1 }
+        return min(5, max(1, Int((abs(model - 0.5) * 10).rounded()) + 1))
+    }
+}
+
+struct BriefingTile: View {
+    let title: String
+    let value: String
+    let detail: String
+    let color: Color
+    let bars: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 10, weight: .bold))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                HealthBars(value: bars, color: color, compact: true)
+            }
+
+            Text(value)
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+
+            Text(detail)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.muted)
+                .lineLimit(1)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.panel2)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Theme.border.opacity(0.75), lineWidth: 1)
         }
     }
 }
@@ -698,10 +832,14 @@ struct ScoutNotes: View {
                 .foregroundStyle(Theme.text)
 
             VStack(alignment: .leading, spacing: 9) {
-                note("Marknaden lutar mot \(radar.favoriteName), men health-gapet är \(abs(radar.pulseA.health - radar.pulseB.health)).")
-                note("Om matchen blir fysisk: \(strongerPulseName) ser ut att ha bäst färsk form.")
+                note(marketNote)
+                note(formNote)
                 if radar.match.state == .live, let score = radar.match.score {
-                    note("Live-läge: \(score). Scoreboarden är signal, inte facit.")
+                    note("Live nu: \(score). Följ serve och prisrörelse innan du litar på en enda datapunkt.")
+                } else if radar.modelA == nil {
+                    note("Modellen väntar på ATP-träff. Just nu är detta en marknadsradar, inte en full scout.")
+                } else {
+                    note("Modellen och marknaden kan jämföras här: när de inte håller med finns ofta det roliga.")
                 }
             }
         }
@@ -716,6 +854,27 @@ struct ScoutNotes: View {
 
     private var strongerPulseName: String {
         radar.pulseA.health >= radar.pulseB.health ? radar.match.playerA.lastName : radar.match.playerB.lastName
+    }
+
+    private var marketNote: String {
+        guard let spread = radar.marketSpread else {
+            return "Marknaden har ännu ingen tydlig prissignal."
+        }
+        if spread < 0.35 {
+            return "Marknaden ser detta som jämnt. Leta efter form eller underlag som bryter dödläget."
+        }
+        return "Marknaden lutar mot \(radar.favoriteName). Frågan är om ATP-signalen håller med."
+    }
+
+    private var formNote: String {
+        let gap = abs(radar.pulseA.health - radar.pulseB.health)
+        if radar.atpCoverage < 2 {
+            return "Formmätaren är försiktig tills båda spelarna hittas i databasen."
+        }
+        if gap == 0 {
+            return "Formbilden är symmetrisk. Då blir odds, underlag och matchup viktigare."
+        }
+        return "\(strongerPulseName) har bäst färsk puls med \(gap) steg i health-gap."
     }
 
     private func note(_ text: String) -> some View {

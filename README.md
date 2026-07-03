@@ -27,3 +27,11 @@ Databasinställningar läses från samma UserDefaults-nycklar som Match Point, e
 - `MYSQL_DATABASE`
 - `MYSQL_USER`
 - `MYSQL_PASSWORD`
+
+När appen körs som `.app` läser den även:
+
+```text
+~/Library/Application Support/Match Point GPT/.env
+```
+
+Filen ska innehålla samma nycklar som ovan och hålls utanför repositoryt.

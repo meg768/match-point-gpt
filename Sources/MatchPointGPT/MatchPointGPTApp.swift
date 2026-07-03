@@ -38,7 +38,7 @@ struct DatabaseSettings: Equatable {
 
 enum SettingsStore {
     static func loadDatabaseSettings() -> DatabaseSettings {
-        let env = ProcessInfo.processInfo.environment
+        let env = loadEnvironment()
         return DatabaseSettings(
             host: UserDefaults.standard.string(forKey: "database.host") ?? env["MYSQL_HOST"] ?? "pi-sql",
             port: int("database.port") ?? Int(env["MYSQL_PORT"] ?? "") ?? 3306,
@@ -46,6 +46,42 @@ enum SettingsStore {
             user: UserDefaults.standard.string(forKey: "database.user") ?? env["MYSQL_USER"] ?? "root",
             password: nonEmpty(UserDefaults.standard.string(forKey: "database.password")) ?? env["MYSQL_PASSWORD"] ?? ""
         )
+    }
+
+    private static func loadEnvironment() -> [String: String] {
+        ProcessInfo.processInfo.environment.merging(loadAppSupportEnv()) { _, fileValue in fileValue }
+    }
+
+    private static func loadAppSupportEnv() -> [String: String] {
+        guard
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else {
+            return [:]
+        }
+
+        let envURL = appSupport
+            .appendingPathComponent("Match Point GPT", isDirectory: true)
+            .appendingPathComponent(".env")
+        guard let contents = try? String(contentsOf: envURL, encoding: .utf8) else {
+            return [:]
+        }
+
+        return parseEnv(contents)
+    }
+
+    private static func parseEnv(_ contents: String) -> [String: String] {
+        contents
+            .split(whereSeparator: \.isNewline)
+            .reduce(into: [String: String]()) { result, line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), let separator = trimmed.firstIndex(of: "=") else {
+                    return
+                }
+
+                let key = String(trimmed[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawValue = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                result[key] = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
     }
 
     private static func int(_ key: String) -> Int? {

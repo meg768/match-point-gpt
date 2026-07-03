@@ -337,6 +337,39 @@ struct MatchRadar: Equatable {
         return "Jämnt"
     }
 
+    var marketFavoriteSide: Int? {
+        guard let a = match.playerA.odds, let b = match.playerB.odds else { return nil }
+        if abs(a - b) < 0.03 { return nil }
+        return a < b ? 0 : 1
+    }
+
+    var modelFavoriteSide: Int? {
+        guard let modelA else { return nil }
+        if modelA >= 0.53 { return 0 }
+        if modelA <= 0.47 { return 1 }
+        return nil
+    }
+
+    var surfaceEdgeSide: Int? {
+        guard let a = playerA?.surfaceElo, let b = playerB?.surfaceElo else { return nil }
+        if abs(a - b) < 35 { return nil }
+        return a > b ? 0 : 1
+    }
+
+    var surfaceEdgeValue: Int? {
+        guard let a = playerA?.surfaceElo, let b = playerB?.surfaceElo else { return nil }
+        return abs(a - b)
+    }
+
+    var healthEdgeSide: Int? {
+        if pulseA.health == pulseB.health { return nil }
+        return pulseA.health > pulseB.health ? 0 : 1
+    }
+
+    func playerLastName(side: Int) -> String {
+        side == 0 ? match.playerA.lastName : match.playerB.lastName
+    }
+
     var tension: Int {
         let healthGap = abs(pulseA.health - pulseB.health)
         let oddsGap = abs((match.playerA.odds ?? 2.0) - (match.playerB.odds ?? 2.0))
@@ -657,6 +690,7 @@ struct SituationRoom: View {
             VStack(alignment: .leading, spacing: 16) {
                 MatchHeader(radar: radar)
                 RadarBriefing(radar: radar)
+                WatchAngles(radar: radar)
                 HStack(alignment: .top, spacing: 14) {
                     PlayerRadarCard(player: radar.playerA, fallback: radar.match.playerA, pulse: radar.pulseA, model: radar.modelA)
                     PlayerRadarCard(player: radar.playerB, fallback: radar.match.playerB, pulse: radar.pulseB, model: radar.modelB)
@@ -773,6 +807,175 @@ struct BriefingTile: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Theme.border.opacity(0.75), lineWidth: 1)
+        }
+    }
+}
+
+struct WatchAngles: View {
+    let radar: MatchRadar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Att bevaka", systemImage: "scope")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                Spacer()
+                Text(radar.match.state == .live ? "live radar" : "match preview")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundStyle(Theme.muted)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                ForEach(angles) { angle in
+                    WatchAngleCard(angle: angle)
+                }
+            }
+        }
+        .padding(16)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Theme.border, lineWidth: 1)
+        }
+    }
+
+    private var angles: [WatchAngle] {
+        var result: [WatchAngle] = []
+
+        if let market = radar.marketFavoriteSide, let model = radar.modelFavoriteSide {
+            if market == model {
+                result.append(.init(
+                    id: "market-model-aligned",
+                    icon: "checkmark.seal",
+                    title: "Samsyn",
+                    detail: "Marknad och modell pekar mot \(radar.playerLastName(side: market)). Mindre kaos, mer bekräftelse.",
+                    color: Theme.live
+                ))
+            } else {
+                result.append(.init(
+                    id: "market-model-split",
+                    icon: "arrow.triangle.branch",
+                    title: "Spricka",
+                    detail: "Marknaden gillar \(radar.playerLastName(side: market)), modellen lutar \(radar.playerLastName(side: model)). Här finns edge-jakt.",
+                    color: Theme.warning
+                ))
+            }
+        } else if let market = radar.marketFavoriteSide {
+            result.append(.init(
+                id: "market-only",
+                icon: "chart.line.uptrend.xyaxis",
+                title: "Prisbild",
+                detail: "\(radar.playerLastName(side: market)) är marknadens ankare. Kontrollera om form och underlag stödjer priset.",
+                color: Theme.accent
+            ))
+        }
+
+        if let side = radar.surfaceEdgeSide, let value = radar.surfaceEdgeValue {
+            result.append(.init(
+                id: "surface-edge",
+                icon: "tennisball",
+                title: "Underlagskant",
+                detail: "\(radar.playerLastName(side: side)) har +\(value) i \(radar.match.surfaceGuess.lowercased())-ELO. Det är dagens taktiska signal.",
+                color: Theme.warning
+            ))
+        }
+
+        if let side = radar.healthEdgeSide {
+            result.append(.init(
+                id: "health-edge",
+                icon: "bolt.heart",
+                title: "Formpuls",
+                detail: "\(radar.playerLastName(side: side)) ser friskare ut i senaste tolv. Motparten behöver bryta mönstret tidigt.",
+                color: side == 0 ? Theme.accent : Theme.live
+            ))
+        } else if radar.atpCoverage == 2 {
+            result.append(.init(
+                id: "health-even",
+                icon: "equal.square",
+                title: "Jämn puls",
+                detail: "Formen skiljer inte mycket. Då blir serve, första set och oddsreaktion viktigare.",
+                color: Theme.muted
+            ))
+        }
+
+        let warningCount = radar.pulseA.warningLosses.count + radar.pulseB.warningLosses.count
+        if warningCount > 0 {
+            result.append(.init(
+                id: "warning-losses",
+                icon: "exclamationmark.triangle",
+                title: "Varningsflaggor",
+                detail: "\(warningCount) färska tapp mot lägre rankat motstånd. Stabiliteten är inte gratis.",
+                color: Theme.danger
+            ))
+        }
+
+        let upsetCount = radar.pulseA.standoutWins.count + radar.pulseB.standoutWins.count
+        if upsetCount > 0 {
+            result.append(.init(
+                id: "upset-wins",
+                icon: "sparkles",
+                title: "Skrällminne",
+                detail: "\(upsetCount) färska vinster uppåt i ranking. Någon här vet hur man slår bättre papper.",
+                color: Theme.live
+            ))
+        }
+
+        if result.isEmpty {
+            result.append(.init(
+                id: "no-data",
+                icon: "magnifyingglass",
+                title: "Datatyst",
+                detail: "Oddset finns, men ATP-signalen är tunn. Bevaka prisrörelse och starttempo först.",
+                color: Theme.accent
+            ))
+        }
+
+        return Array(result.prefix(4))
+    }
+}
+
+struct WatchAngle: Identifiable {
+    let id: String
+    let icon: String
+    let title: String
+    let detail: String
+    let color: Color
+}
+
+struct WatchAngleCard: View {
+    let angle: WatchAngle
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: angle.icon)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(angle.color)
+                .frame(width: 24, height: 24)
+                .background(angle.color.opacity(0.13))
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(angle.title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                Text(angle.detail)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
+        .background(Theme.panel2)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Theme.border.opacity(0.65), lineWidth: 1)
         }
     }
 }

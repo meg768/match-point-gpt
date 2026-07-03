@@ -851,16 +851,16 @@ struct WatchAngles: View {
                 result.append(.init(
                     id: "market-model-aligned",
                     icon: "checkmark.seal",
-                    title: "Samsyn",
-                    detail: "Marknad och modell pekar mot \(radar.playerLastName(side: market)). Mindre kaos, mer bekräftelse.",
+                    title: "Överens",
+                    detail: "Marknad och modell pekar mot \(radar.playerLastName(side: market)). Ingen konflikt att jaga här.",
                     color: Theme.live
                 ))
             } else {
                 result.append(.init(
                     id: "market-model-split",
                     icon: "arrow.triangle.branch",
-                    title: "Spricka",
-                    detail: "Marknaden gillar \(radar.playerLastName(side: market)), modellen lutar \(radar.playerLastName(side: model)). Här finns edge-jakt.",
+                    title: "Konflikt",
+                    detail: "Marknaden gillar \(radar.playerLastName(side: market)), modellen lutar \(radar.playerLastName(side: model)). Undersök varför.",
                     color: Theme.warning
                 ))
             }
@@ -869,7 +869,7 @@ struct WatchAngles: View {
                 id: "market-only",
                 icon: "chart.line.uptrend.xyaxis",
                 title: "Prisbild",
-                detail: "\(radar.playerLastName(side: market)) är marknadens ankare. Kontrollera om form och underlag stödjer priset.",
+                detail: "\(radar.playerLastName(side: market)) är marknadens ankare. Oddset är baseline tills mer data säger annat.",
                 color: Theme.accent
             ))
         }

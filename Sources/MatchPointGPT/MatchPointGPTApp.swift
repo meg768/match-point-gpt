@@ -357,6 +357,7 @@ final class RadarStore: ObservableObject {
 
     private let oddset = OddsetClient()
     private let database = ATPDatabase(settings: SettingsStore.loadDatabaseSettings())
+    private var radarCache: [String: MatchRadar] = [:]
 
     var selectedMatch: RadarMatch? {
         matches.first { $0.id == selectedID } ?? matches.first
@@ -369,6 +370,7 @@ final class RadarStore: ObservableObject {
     }
 
     func select(_ match: RadarMatch) {
+        guard selectedID != match.id else { return }
         selectedID = match.id
         Task {
             await loadRadar(for: match)
@@ -380,7 +382,10 @@ final class RadarStore: ObservableObject {
         status = "Läser tennisradar..."
 
         do {
-            matches = try await oddset.loadMatches()
+            let loadedMatches = try await oddset.loadMatches()
+            if loadedMatches != matches {
+                matches = loadedMatches
+            }
             if selectedID == nil || !matches.contains(where: { $0.id == selectedID }) {
                 selectedID = matches.first?.id
             }
@@ -396,10 +401,27 @@ final class RadarStore: ObservableObject {
     }
 
     private func loadRadar(for match: RadarMatch) async {
-        radar = MatchRadar(match: match, playerA: nil, playerB: nil, modelA: nil)
+        if let current = radar, current.match.id == match.id {
+            let refreshedShell = MatchRadar(match: match, playerA: current.playerA, playerB: current.playerB, modelA: current.modelA)
+            if refreshedShell != current {
+                radar = refreshedShell
+                radarCache[match.id] = refreshedShell
+            }
+        } else if let cached = radarCache[match.id] {
+            let refreshedShell = MatchRadar(match: match, playerA: cached.playerA, playerB: cached.playerB, modelA: cached.modelA)
+            radar = refreshedShell
+            radarCache[match.id] = refreshedShell
+        } else {
+            radar = MatchRadar(match: match, playerA: nil, playerB: nil, modelA: nil)
+        }
+
         do {
             let loaded = try await database.loadRadar(match: match)
-            radar = loaded
+            guard selectedID == match.id else { return }
+            radarCache[match.id] = loaded
+            if radar != loaded {
+                radar = loaded
+            }
             if loaded.playerA == nil || loaded.playerB == nil {
                 let missing = [
                     loaded.playerA == nil ? match.playerA.name : nil,

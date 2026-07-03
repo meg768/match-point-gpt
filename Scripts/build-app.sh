@@ -48,6 +48,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Match Point GPT hämtar signaler från din lokala ATP-databas.</string>
 </dict>
 </plist>
 PLIST

@@ -41,11 +41,15 @@ enum SettingsStore {
         let env = ProcessInfo.processInfo.environment
         return DatabaseSettings(
             host: UserDefaults.standard.string(forKey: "database.host") ?? env["MYSQL_HOST"] ?? "pi-sql",
-            port: UserDefaults.standard.integer(forKey: "database.port").nonZero ?? Int(env["MYSQL_PORT"] ?? "") ?? 3306,
+            port: int("database.port") ?? Int(env["MYSQL_PORT"] ?? "") ?? 3306,
             database: UserDefaults.standard.string(forKey: "database.name") ?? env["MYSQL_DATABASE"] ?? "atp",
             user: UserDefaults.standard.string(forKey: "database.user") ?? env["MYSQL_USER"] ?? "root",
             password: nonEmpty(UserDefaults.standard.string(forKey: "database.password")) ?? env["MYSQL_PASSWORD"] ?? ""
         )
+    }
+
+    private static func int(_ key: String) -> Int? {
+        UserDefaults.standard.integer(forKey: key).nonZero
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -187,8 +191,8 @@ struct PlayerPulse: Equatable {
         guard let player else {
             health = 2
             formRecord = "-"
-            title = "Okänd signal"
-            note = "Spelaren hittades inte i ATP-databasen."
+            title = "Väntar på ATP"
+            note = "Marknaden finns. Databassignalen fylls på när spelaren matchas."
             standoutWins = []
             warningLosses = []
             return
@@ -324,7 +328,19 @@ final class RadarStore: ObservableObject {
     private func loadRadar(for match: RadarMatch) async {
         radar = MatchRadar(match: match, playerA: nil, playerB: nil, modelA: nil)
         do {
-            radar = try await database.loadRadar(match: match)
+            let loaded = try await database.loadRadar(match: match)
+            radar = loaded
+            if loaded.playerA == nil || loaded.playerB == nil {
+                let missing = [
+                    loaded.playerA == nil ? match.playerA.name : nil,
+                    loaded.playerB == nil ? match.playerB.name : nil
+                ]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+                status = "Oddset OK. ATP-träff saknas för \(missing)."
+            } else {
+                status = "Oddset och ATP-signaler laddade."
+            }
         } catch {
             status = "ATP-signaler saknas: \(error.localizedDescription)"
         }
@@ -1209,14 +1225,26 @@ struct ATPDatabase {
 
     func loadRadar(match: RadarMatch) async throws -> MatchRadar {
         try await withConnection { connection in
-            let playerA = try await loadPlayer(name: match.playerA.name, surface: match.surfaceGuess, on: connection)
-            let playerB = try await loadPlayer(name: match.playerB.name, surface: match.surfaceGuess, on: connection)
-            let model = try? await loadModel(playerA: match.playerA.name, playerB: match.playerB.name, surface: match.surfaceGuess, on: connection)
+            let refA = try await resolvePlayer(match.playerA.name, on: connection)
+            let refB = try await resolvePlayer(match.playerB.name, on: connection)
+            let playerA: PlayerStats?
+            if let refA {
+                playerA = try await loadPlayer(ref: refA, surface: match.surfaceGuess, on: connection)
+            } else {
+                playerA = nil
+            }
+            let playerB: PlayerStats?
+            if let refB {
+                playerB = try await loadPlayer(ref: refB, surface: match.surfaceGuess, on: connection)
+            } else {
+                playerB = nil
+            }
+            let model = try? await loadModel(playerA: refA, playerB: refB, surface: match.surfaceGuess, on: connection)
             return MatchRadar(match: match, playerA: playerA, playerB: playerB, modelA: model)
         }
     }
 
-    private func loadPlayer(name: String, surface: String, on connection: MySQLConnection) async throws -> PlayerStats? {
+    private func loadPlayer(ref: PlayerRef, surface: String, on connection: MySQLConnection) async throws -> PlayerStats? {
         let rows = try await connection.query(
             """
             SELECT
@@ -1232,13 +1260,13 @@ struct ATPDatabase {
                     ELSE elo_rank_hard
                 END AS surface_elo
             FROM players
-            WHERE id = PLAYER_LOOKUP(?)
+            WHERE id = ?
             LIMIT 1
             """,
             [
                 MySQLData(string: surface),
                 MySQLData(string: surface),
-                MySQLData(string: name)
+                MySQLData(string: ref.id)
             ]
         ).get()
 
@@ -1246,7 +1274,7 @@ struct ATPDatabase {
             return nil
         }
 
-        let recent = try await loadRecentMatches(name: resolvedName, on: connection)
+        let recent = try await loadRecentMatches(playerID: id, playerName: resolvedName, on: connection)
         return PlayerStats(
             id: id,
             name: resolvedName,
@@ -1259,7 +1287,55 @@ struct ATPDatabase {
         )
     }
 
-    private func loadRecentMatches(name: String, on connection: MySQLConnection) async throws -> [HistoricalMatch] {
+    private func resolvePlayer(_ name: String, on connection: MySQLConnection) async throws -> PlayerRef? {
+        let parts = name.split(separator: " ").map(String.init)
+        let first = parts.first ?? name
+        let last = parts.last ?? name
+        let firstLike = "%\(first)%"
+        let lastLike = "%\(last)%"
+        let lastOnlyLike = "%\(last)%"
+
+        let rows = try await connection.query(
+            """
+            SELECT id, name
+            FROM players
+            WHERE id = PLAYER_LOOKUP(?)
+               OR LOWER(name) = LOWER(?)
+               OR (LOWER(name) LIKE LOWER(?) AND LOWER(name) LIKE LOWER(?))
+               OR LOWER(name) LIKE LOWER(?)
+            ORDER BY
+                CASE
+                    WHEN id = PLAYER_LOOKUP(?) THEN 0
+                    WHEN LOWER(name) = LOWER(?) THEN 1
+                    WHEN (LOWER(name) LIKE LOWER(?) AND LOWER(name) LIKE LOWER(?)) THEN 2
+                    ELSE 3
+                END,
+                CASE WHEN rank IS NULL THEN 1 ELSE 0 END,
+                rank ASC,
+                name ASC
+            LIMIT 1
+            """,
+            [
+                MySQLData(string: name),
+                MySQLData(string: name),
+                MySQLData(string: firstLike),
+                MySQLData(string: lastLike),
+                MySQLData(string: lastOnlyLike),
+                MySQLData(string: name),
+                MySQLData(string: name),
+                MySQLData(string: firstLike),
+                MySQLData(string: lastLike)
+            ]
+        ).get()
+
+        guard let row = rows.first, let id = row.string("id"), let resolvedName = row.string("name") else {
+            return nil
+        }
+
+        return PlayerRef(id: id, name: resolvedName)
+    }
+
+    private func loadRecentMatches(playerID: String, playerName _: String, on connection: MySQLConnection) async throws -> [HistoricalMatch] {
         let rows = try await connection.query(
             """
             SELECT
@@ -1279,13 +1355,14 @@ struct ATPDatabase {
             WHERE e.date IS NOT NULL
               AND m.winner IS NOT NULL
               AND m.loser IS NOT NULL
-              AND (m.winner = PLAYER_LOOKUP(?) OR m.loser = PLAYER_LOOKUP(?))
+              AND (m.winner = ? OR m.loser = ?)
+              AND LOWER(e.name) NOT LIKE '%challenger%'
             ORDER BY e.date DESC, e.id DESC, m.id DESC
             LIMIT 80
             """,
             [
-                MySQLData(string: name),
-                MySQLData(string: name)
+                MySQLData(string: playerID),
+                MySQLData(string: playerID)
             ]
         ).get()
 
@@ -1314,14 +1391,16 @@ struct ATPDatabase {
         }
     }
 
-    private func loadModel(playerA: String, playerB: String, surface: String, on connection: MySQLConnection) async throws -> Double? {
+    private func loadModel(playerA: PlayerRef?, playerB: PlayerRef?, surface: String, on connection: MySQLConnection) async throws -> Double? {
+        guard let playerA, let playerB else { return nil }
+
         let rows = try await connection.query(
             """
-            SELECT PLAYER_WIN_FACTOR(PLAYER_LOOKUP(?), PLAYER_LOOKUP(?), ?) AS win_factor_a
+            SELECT PLAYER_WIN_FACTOR(?, ?, ?) AS win_factor_a
             """,
             [
-                MySQLData(string: playerA),
-                MySQLData(string: playerB),
+                MySQLData(string: playerA.id),
+                MySQLData(string: playerB.id),
                 MySQLData(string: surface)
             ]
         ).get()
@@ -1358,6 +1437,11 @@ struct ATPDatabase {
             throw error
         }
     }
+}
+
+private struct PlayerRef {
+    let id: String
+    let name: String
 }
 
 private extension MySQLRow {
